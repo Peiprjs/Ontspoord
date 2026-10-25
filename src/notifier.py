@@ -1,6 +1,9 @@
+"""Telegram delivery helpers for HTML digests and optional voice messages."""
+
 import logging
 import time
 from typing import List, Optional
+
 import httpx
 from bs4 import BeautifulSoup
 
@@ -14,6 +17,7 @@ MAX_TELEGRAM_MESSAGE_LENGTH = 4096
 
 
 def chunk_html_message(text: str, max_length: int = MAX_TELEGRAM_MESSAGE_LENGTH) -> List[str]:
+    """Split long HTML text into Telegram-safe chunks while preserving paragraph boundaries."""
     if len(text) <= max_length:
         return [text]
 
@@ -23,9 +27,9 @@ def chunk_html_message(text: str, max_length: int = MAX_TELEGRAM_MESSAGE_LENGTH)
 
     paragraphs = text.split("\n\n")
 
-    for p in paragraphs:
-        if len(p) + 2 > max_length:
-            lines = p.split("\n")
+    for paragraph in paragraphs:
+        if len(paragraph) + 2 > max_length:
+            lines = paragraph.split("\n")
             for line in lines:
                 if current_len + len(line) + 1 > max_length:
                     if current_chunk:
@@ -35,13 +39,13 @@ def chunk_html_message(text: str, max_length: int = MAX_TELEGRAM_MESSAGE_LENGTH)
                 current_chunk.append(line)
                 current_len += len(line) + 1
         else:
-            if current_len + len(p) + 2 > max_length:
+            if current_len + len(paragraph) + 2 > max_length:
                 if current_chunk:
                     chunks.append("\n\n".join(current_chunk))
                     current_chunk = []
                     current_len = 0
-            current_chunk.append(p)
-            current_len += len(p) + 2
+            current_chunk.append(paragraph)
+            current_len += len(paragraph) + 2
 
     if current_chunk:
         chunks.append("\n\n".join(current_chunk))
@@ -50,6 +54,7 @@ def chunk_html_message(text: str, max_length: int = MAX_TELEGRAM_MESSAGE_LENGTH)
 
 
 class TelegramNotifier:
+    """Send multi-part digest and voice messages to a Telegram chat."""
 
     def __init__(
         self,
@@ -64,6 +69,7 @@ class TelegramNotifier:
         self.backoff_factor = backoff_factor
 
     def send_digest(self, html_text: str) -> bool:
+        """Send one digest message, splitting it into chunks if needed."""
         if not self.token or self.token.startswith("your_") or not self.chat_id:
             logger.warning("Telegram bot credentials not configured. Digest not sent.")
             return False
@@ -72,29 +78,30 @@ class TelegramNotifier:
         chunks = chunk_html_message(sanitized_html)
         success = True
 
-        for idx, chunk in enumerate(chunks):
+        for chunk_index, chunk in enumerate(chunks):
             sanitized_chunk = sanitize_telegram_html(chunk)
             chunk_success = self._send_chunk_with_retry(sanitized_chunk)
             if not chunk_success:
-                logger.error(f"Failed to send chunk {idx + 1}/{len(chunks)}")
+                logger.error(f"Failed to send chunk {chunk_index + 1}/{len(chunks)}")
                 success = False
 
         return success
 
     def send_report(self, report: DigestReport) -> bool:
+        """Send each generated report message in order with a short delay between messages."""
         messages = report.get_messages_to_send()
         if not messages:
             logger.info("No messages to send in report.")
             return True
 
         overall_success = True
-        for idx, msg in enumerate(messages, 1):
-            logger.info(f"Sending report message {idx}/{len(messages)} to Telegram...")
-            ok = self.send_digest(msg)
-            if not ok:
-                logger.error(f"Failed to send report message {idx}/{len(messages)}")
+        for message_index, message in enumerate(messages, 1):
+            logger.info(f"Sending report message {message_index}/{len(messages)} to Telegram...")
+            message_sent = self.send_digest(message)
+            if not message_sent:
+                logger.error(f"Failed to send report message {message_index}/{len(messages)}")
                 overall_success = False
-            if idx < len(messages):
+            if message_index < len(messages):
                 time.sleep(0.5)
 
         return overall_success
@@ -106,6 +113,7 @@ class TelegramNotifier:
         filename: str = "network_summary.ogg",
         mime_type: str = "audio/ogg",
     ) -> bool:
+        """Send a voice message and fall back to sendAudio when needed."""
         if not self.token or self.token.startswith("your_") or not self.chat_id:
             logger.warning("Telegram bot credentials not configured. Voice message not sent.")
             return False
@@ -151,9 +159,9 @@ class TelegramNotifier:
                         )
                         time.sleep(delay)
 
-            except Exception as e:
+            except Exception as error:
                 logger.warning(
-                    f"Network error sending Telegram voice message (attempt {attempt}/{self.max_retries}): {e}"
+                    f"Network error sending Telegram voice message (attempt {attempt}/{self.max_retries}): {error}"
                 )
                 time.sleep(delay)
 
@@ -162,6 +170,7 @@ class TelegramNotifier:
         return False
 
     def _send_chunk_with_retry(self, text: str) -> bool:
+        """Send one chunk with retry/backoff and HTML parse fallback to plain text."""
         url = f"https://api.telegram.org/bot{self.token}/sendMessage"
         payload = {
             "chat_id": self.chat_id,
@@ -203,8 +212,10 @@ class TelegramNotifier:
                         )
                         time.sleep(delay)
 
-            except Exception as e:
-                logger.warning(f"Network error sending Telegram message (attempt {attempt}/{self.max_retries}): {e}")
+            except Exception as error:
+                logger.warning(
+                    f"Network error sending Telegram message (attempt {attempt}/{self.max_retries}): {error}"
+                )
                 time.sleep(delay)
 
             delay *= self.backoff_factor

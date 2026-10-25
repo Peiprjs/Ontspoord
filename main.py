@@ -1,8 +1,11 @@
+"""CLI entry point for collecting disruptions and sending monitor updates."""
+
 import argparse
 import logging
 import sys
 from typing import Optional
 from zoneinfo import ZoneInfo
+
 from apscheduler.schedulers.blocking import BlockingScheduler
 from apscheduler.triggers.cron import CronTrigger
 
@@ -26,6 +29,7 @@ def run_job(
     language: Optional[str] = None,
     voice: bool = False,
 ) -> DigestReport:
+    """Collect disruptions, generate messages, and optionally deliver them."""
     logger.info("Starting OV disruption check...")
     events = collect_all_disruptions()
     logger.info(f"Total deduplicated events for next 7 days: {len(events)}")
@@ -76,13 +80,14 @@ def run_job(
 
 
 def start_daemon(language: Optional[str] = None, voice: bool = False):
+    """Run the monitor on a schedule and execute one startup run immediately."""
     scheduler = BlockingScheduler()
-    tz = ZoneInfo(settings.timezone)
+    timezone_info = ZoneInfo(settings.timezone)
     schedule_times = settings.parsed_schedule_times
 
     logger.info(f"Starting daemon scheduler in timezone {settings.timezone}")
     for hour, minute in schedule_times:
-        trigger = CronTrigger(hour=hour, minute=minute, timezone=tz)
+        trigger = CronTrigger(hour=hour, minute=minute, timezone=timezone_info)
         scheduler.add_job(
             run_job,
             trigger=trigger,
@@ -101,6 +106,7 @@ def start_daemon(language: Optional[str] = None, voice: bool = False):
 
 
 def main():
+    """Parse CLI arguments and execute the selected runtime mode."""
     parser = argparse.ArgumentParser(
         description="NL OV Monitor: Monitor strikes & disruptions across the Netherlands with Gemma 4 E4B."
     )
