@@ -120,13 +120,15 @@ def _fallback_voice_script(
     - 45s limit if disruptions
     incorporating interactive 11Labs tags.
     """
+    from src.summarizer import has_substantive_strikes
+
     raw_lang = language or settings.normalized_language
     is_english = str(raw_lang).strip().lower() in {"en", "english", "eng"}
 
     strikes = [e for e in events if e.is_strike]
     works = [e for e in events if not e.is_strike]
 
-    has_strikes = bool(strikes)
+    has_strikes = has_substantive_strikes(strikes)
     has_works = bool(works)
     region_name = settings.regions_label
 
@@ -217,10 +219,18 @@ def generate_voice_script(
     Uses 11Labs tags ([announcer], [urgent], [serious], [sigh], [relieved],
     [calm], [cheerfully], [laughs]) for expressive and interactive audio delivery.
     """
+    from src.summarizer import has_substantive_strikes
+
     raw_lang = language or settings.normalized_language
     is_english = str(raw_lang).strip().lower() in {"en", "english", "eng"}
 
-    has_disruptions = bool(events)
+    strikes = [e for e in events if e.is_strike]
+    works = [e for e in events if not e.is_strike]
+
+    has_actual_strikes = has_substantive_strikes(strikes)
+    has_actual_works = bool(works)
+    has_disruptions = has_actual_strikes or has_actual_works
+
     max_seconds = DISRUPTIONS_MAX_SECONDS if has_disruptions else CALM_MAX_SECONDS
     region_name = settings.regions_label
 
@@ -229,9 +239,6 @@ def generate_voice_script(
 
     # Format event details for Gemma
     if has_disruptions:
-        strikes = [e for e in events if e.is_strike]
-        works = [e for e in events if not e.is_strike]
-
         event_summaries = []
         if strikes:
             event_summaries.append(f"STRIKES ({len(strikes)}):")

@@ -14,9 +14,9 @@ A Python CLI and scheduled automation tool that monitors public transport strike
   - Monitors the entire Netherlands by default (`TARGET_REGIONS=Nederland`).
   - Optional `.env` toggles to target any specific province(s) (e.g. `TARGET_REGIONS=Utrecht,Noord-Holland` or `Limburg`), station codes, or keywords.
 - **3-Message Structure**:
-  1. **Strikes** (conditional: sent only if strikes exist; covers reason, affected train series/bus areas).
-  2. **Works & Disruptions** (conditional: sent only if works exist; covers reason, affected train series/bus areas).
-  3. **General Status** (always sent; concise high-level overview).
+  1. **Strikes** (conditional: evaluated by Gemma and skipped if no strike actions are active/planned).
+  2. **Works & Disruptions** (conditional: sent only if active/planned works exist).
+  3. **General Status** (always sent; concise status overview by modality, with green 🟢 status when regular service runs).
 - **Local Gemma 4 E4B Summarization**
 - **Telegram DM Delivery**
 - **Flexible Execution Modes**:
