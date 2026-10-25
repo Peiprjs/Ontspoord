@@ -11,6 +11,8 @@ from src.voice import (
     estimate_speech_duration_seconds,
     generate_voice_script,
     ElevenLabsVoiceService,
+    model_supports_audio_tags,
+    prepare_script_for_model,
     send_voice_summary,
 )
 from src.notifier import TelegramNotifier
@@ -157,8 +159,11 @@ def test_elevenlabs_service_synthesize_success():
         result = service.synthesize_speech("[calm] Testing 11labs audio")
         assert result == fake_audio
         assert mock_post.called
+        call_url = mock_post.call_args[0][0]
         call_kwargs = mock_post.call_args[1]
+        assert service.voice_id in call_url
         assert call_kwargs["headers"]["xi-api-key"] == "valid-test-key"
+        assert call_kwargs["json"]["text"] == "Testing 11labs audio"
         assert call_kwargs["params"] == {"output_format": "opus_48000_64"}
 
 
@@ -177,6 +182,24 @@ def test_elevenlabs_service_fallback_format():
     with patch("httpx.Client.post", side_effect=[resp_fail, resp_ok]):
         result = service.synthesize_speech("[calm] Testing fallback")
         assert result == fake_audio
+
+
+def test_model_supports_audio_tags():
+    assert model_supports_audio_tags("eleven_v3")
+    assert model_supports_audio_tags("eleven_v4_turbo")
+    assert not model_supports_audio_tags("eleven_multilingual_v2")
+
+
+def test_prepare_script_for_model_removes_tags_for_multilingual_v2():
+    script = "[cheerfully] Hello travelers! [sighs] Delays expected."
+    result = prepare_script_for_model(script, "eleven_multilingual_v2")
+    assert result == "Hello travelers! Delays expected."
+
+
+def test_prepare_script_for_model_keeps_tags_for_eleven_v3():
+    script = "[cheerfully] Hello travelers!"
+    result = prepare_script_for_model(script, "eleven_v3")
+    assert result == script
 
 
 def test_telegram_send_voice_success():

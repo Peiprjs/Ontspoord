@@ -12,6 +12,21 @@ logger = logging.getLogger(__name__)
 
 CALM_MAX_SECONDS = 15.0
 DISRUPTIONS_MAX_SECONDS = 45.0
+_AUDIO_TAG_RE = re.compile(r"\[[^\[\]]+\]")
+
+
+def model_supports_audio_tags(model_id: Optional[str]) -> bool:
+    """Return whether the selected ElevenLabs model supports inline audio tags."""
+    normalized = (model_id or "").strip().lower()
+    return normalized.startswith("eleven_v3") or normalized.startswith("eleven_v4")
+
+
+def prepare_script_for_model(script: str, model_id: Optional[str]) -> str:
+    """Remove inline tags for models that do not support ElevenLabs audio tags."""
+    if model_supports_audio_tags(model_id):
+        return script.strip()
+    without_tags = re.sub(_AUDIO_TAG_RE, " ", script)
+    return re.sub(r"\s+", " ", without_tags).strip()
 
 
 def count_spoken_words(script: str) -> int:
@@ -381,8 +396,13 @@ class ElevenLabsVoiceService:
             "xi-api-key": self.api_key,
             "Content-Type": "application/json",
         }
+        model_ready_script = prepare_script_for_model(script, self.model_id)
+        if model_ready_script != script:
+            logger.info(
+                "ElevenLabs model does not support inline audio tags; sending cleaned script without tags."
+            )
         payload = {
-            "text": script,
+            "text": model_ready_script,
             "model_id": self.model_id,
             "voice_settings": {
                 "stability": 0.5,
