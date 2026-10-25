@@ -14,6 +14,13 @@ class Settings(BaseSettings):
     ns_api_key: Optional[str] = Field(default=None, alias="NS_API_KEY")
     telegram_bot_token: Optional[str] = Field(default=None, alias="TELEGRAM_BOT_TOKEN")
     telegram_chat_id: Optional[str] = Field(default=None, alias="TELEGRAM_CHAT_ID")
+    eleven_api_key: Optional[str] = Field(default=None, alias="ELEVEN_API_KEY")
+    elevenlabs_api_key: Optional[str] = Field(default=None, alias="ELEVENLABS_API_KEY")
+    elevenlabs_voice_id: Optional[str] = Field(default=None, alias="ELEVENLABS_VOICE_ID")
+    eleven_voice_id: Optional[str] = Field(default=None, alias="ELEVEN_VOICE_ID")
+    elevenlabs_model_id: Optional[str] = Field(default=None, alias="ELEVENLABS_MODEL_ID")
+    eleven_model_id: Optional[str] = Field(default=None, alias="ELEVEN_MODEL_ID")
+    voice_enabled: bool = Field(default=False, alias="VOICE_ENABLED")
     ollama_host: str = Field(default="http://localhost:11434", alias="OLLAMA_HOST")
     ollama_model: str = Field(default="gemma4:e4b", alias="OLLAMA_MODEL")
     schedule_times: str = Field(default="07:30,19:30", alias="SCHEDULE_TIMES")
@@ -27,6 +34,18 @@ class Settings(BaseSettings):
         if lang in {"en", "english", "eng"}:
             return "en"
         return "nl"
+
+    @property
+    def resolved_eleven_api_key(self) -> Optional[str]:
+        return self.eleven_api_key or self.elevenlabs_api_key
+
+    @property
+    def resolved_eleven_voice_id(self) -> str:
+        return self.eleven_voice_id or self.elevenlabs_voice_id or "EXAVITQu4vr4xnSDxMaL"
+
+    @property
+    def resolved_eleven_model_id(self) -> str:
+        return self.eleven_model_id or self.elevenlabs_model_id or "eleven_multilingual_v2"
 
     target_regions: str = Field(default="Nederland", alias="TARGET_REGIONS")
     target_station_codes: str = Field(default="", alias="TARGET_STATION_CODES")

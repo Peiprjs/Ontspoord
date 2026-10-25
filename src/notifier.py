@@ -99,6 +99,68 @@ class TelegramNotifier:
 
         return overall_success
 
+    def send_voice(
+        self,
+        audio_bytes: bytes,
+        caption: Optional[str] = None,
+        filename: str = "network_summary.ogg",
+        mime_type: str = "audio/ogg",
+    ) -> bool:
+        if not self.token or self.token.startswith("your_") or not self.chat_id:
+            logger.warning("Telegram bot credentials not configured. Voice message not sent.")
+            return False
+
+        url = f"https://api.telegram.org/bot{self.token}/sendVoice"
+        data = {
+            "chat_id": self.chat_id,
+        }
+        if caption:
+            data["caption"] = caption
+            data["parse_mode"] = "HTML"
+
+        delay = 1.0
+        for attempt in range(1, self.max_retries + 1):
+            try:
+                files = {"voice": (filename, audio_bytes, mime_type)}
+                with httpx.Client(timeout=30.0) as client:
+                    resp = client.post(url, data=data, files=files)
+                    if resp.status_code == 200:
+                        logger.info("Telegram voice message delivered successfully.")
+                        return True
+
+                    if resp.status_code == 400:
+                        logger.warning(
+                            f"Telegram sendVoice returned 400 ({resp.text}). Retrying with sendAudio fallback..."
+                        )
+                        audio_url = f"https://api.telegram.org/bot{self.token}/sendAudio"
+                        audio_files = {"audio": (filename, audio_bytes, mime_type)}
+                        audio_resp = client.post(audio_url, data=data, files=audio_files)
+                        if audio_resp.status_code == 200:
+                            logger.info("Telegram audio message delivered successfully via sendAudio.")
+                            return True
+                        logger.warning(f"sendAudio fallback also failed: {audio_resp.status_code} - {audio_resp.text}")
+
+                    if resp.status_code == 429:
+                        retry_after = resp.json().get("parameters", {}).get("retry_after", delay)
+                        logger.warning(f"Telegram rate limited (429). Retrying after {retry_after}s...")
+                        time.sleep(float(retry_after))
+                    else:
+                        logger.warning(
+                            f"Telegram voice error (attempt {attempt}/{self.max_retries}): "
+                            f"{resp.status_code} - {resp.text}"
+                        )
+                        time.sleep(delay)
+
+            except Exception as e:
+                logger.warning(
+                    f"Network error sending Telegram voice message (attempt {attempt}/{self.max_retries}): {e}"
+                )
+                time.sleep(delay)
+
+            delay *= self.backoff_factor
+
+        return False
+
     def _send_chunk_with_retry(self, text: str) -> bool:
         url = f"https://api.telegram.org/bot{self.token}/sendMessage"
         payload = {

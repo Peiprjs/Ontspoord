@@ -11,6 +11,7 @@ from src.collectors import collect_all_disruptions
 from src.models import DigestReport
 from src.summarizer import DisruptionSummarizer
 from src.notifier import TelegramNotifier
+from src.voice import send_voice_summary
 
 logging.basicConfig(
     level=logging.INFO,
@@ -20,13 +21,19 @@ logging.basicConfig(
 logger = logging.getLogger("nl-ov-monitor")
 
 
-def run_job(dry_run: bool = False, language: Optional[str] = None) -> DigestReport:
+def run_job(
+    dry_run: bool = False,
+    language: Optional[str] = None,
+    voice: bool = False,
+) -> DigestReport:
     logger.info("Starting OV disruption check...")
     events = collect_all_disruptions()
     logger.info(f"Total deduplicated events for next 7 days: {len(events)}")
 
     summarizer = DisruptionSummarizer(language=language)
     report = summarizer.generate_report(events)
+
+    should_send_voice = voice or settings.voice_enabled
 
     if dry_run:
         print("\n" + "=" * 60)
@@ -51,6 +58,9 @@ def run_job(dry_run: bool = False, language: Optional[str] = None) -> DigestRepo
         print(report.general_status_message)
         print("=" * 60 + "\n")
         logger.info(f"Dry run complete. Generated {len(report.get_messages_to_send())} message(s). No Telegram notification sent.")
+
+        if should_send_voice:
+            send_voice_summary(events=events, language=language, dry_run=True)
     else:
         notifier = TelegramNotifier()
         success = notifier.send_report(report)
@@ -59,10 +69,13 @@ def run_job(dry_run: bool = False, language: Optional[str] = None) -> DigestRepo
         else:
             logger.warning("Telegram report was not delivered (check credentials or logs).")
 
+        if should_send_voice:
+            send_voice_summary(events=events, language=language, dry_run=False, notifier=notifier)
+
     return report
 
 
-def start_daemon(language: Optional[str] = None):
+def start_daemon(language: Optional[str] = None, voice: bool = False):
     scheduler = BlockingScheduler()
     tz = ZoneInfo(settings.timezone)
     schedule_times = settings.parsed_schedule_times
@@ -73,13 +86,13 @@ def start_daemon(language: Optional[str] = None):
         scheduler.add_job(
             run_job,
             trigger=trigger,
-            args=[False, language],
+            args=[False, language, voice],
             name=f"OV-Check-{hour:02d}:{minute:02d}",
         )
         logger.info(f"Scheduled check at {hour:02d}:{minute:02d} ({settings.timezone})")
 
     logger.info("Executing initial check on daemon startup...")
-    run_job(dry_run=False, language=language)
+    run_job(dry_run=False, language=language, voice=voice)
 
     try:
         scheduler.start()
@@ -107,6 +120,11 @@ def main():
         help="Fetch data, run local Gemma 4 summarization, and print to stdout without calling Telegram.",
     )
     parser.add_argument(
+        "--voice",
+        action="store_true",
+        help="Generate and send an optional interactive voice message via Gemma & ElevenLabs (<=15s if calm, <=45s if disruptions).",
+    )
+    parser.add_argument(
         "--lang",
         "--language",
         dest="language",
@@ -118,11 +136,11 @@ def main():
     args = parser.parse_args()
 
     if args.dry_run:
-        run_job(dry_run=True, language=args.language)
+        run_job(dry_run=True, language=args.language, voice=args.voice)
     elif args.daemon:
-        start_daemon(language=args.language)
+        start_daemon(language=args.language, voice=args.voice)
     elif args.once or len(sys.argv) == 1:
-        run_job(dry_run=False, language=args.language)
+        run_job(dry_run=False, language=args.language, voice=args.voice)
     else:
         parser.print_help()
 

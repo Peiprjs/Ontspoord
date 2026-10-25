@@ -57,8 +57,63 @@ def sanitize_telegram_html(text: str) -> str:
 
     cleaned = str(soup)
     cleaned = re.sub(r"<b>\s*(?:Reisadvies|Travel\s*Advice)\s*:?\s*</b>.*?(?=(?:\n\s*<b>|$))", "", cleaned, flags=re.IGNORECASE | re.DOTALL)
+    cleaned = re.sub(r"<b>\s*(?:Key\s*Takeaways?|Belangrijkste\s*aandachtspunten)\s*:?\s*</b>.*?(?=(?:\n\s*<b>|$))", "", cleaned, flags=re.IGNORECASE | re.DOTALL)
     cleaned = re.sub(r"\n{3,}", "\n\n", cleaned)
     return cleaned.strip()
+
+
+def is_no_message(text: Optional[str]) -> bool:
+    """Checks if Gemma decided that a message should not be sent."""
+    if not text:
+        return True
+    plain = BeautifulSoup(text, "html.parser").get_text().strip()
+    upper = plain.upper()
+    if upper in {
+        "NO_MESSAGE", "NO MESSAGE", "GEEN_BERICHT", "GEEN BERICHT",
+        "SKIP", "NONE", "NULL", "NO-MESSAGE", "GEEN-BERICHT"
+    }:
+        return True
+    if upper.startswith("NO_MESSAGE") or upper.startswith("GEEN_BERICHT") or upper.startswith("SKIP"):
+        return True
+    # Short replies (<140 chars) stating that there are no strikes or disruptions
+    lower = plain.lower()
+    if len(lower) < 140 and any(
+        phrase in lower
+        for phrase in [
+            "geen staking",
+            "wordt er niet gestaakt",
+            "niet gestaakt",
+            "no strike",
+            "no active strike",
+            "no planned strike",
+            "geen stakingsacties",
+            "no disruptions",
+            "geen werkzaamheden",
+        ]
+    ):
+        return True
+    return False
+
+
+def has_substantive_strikes(strikes: List[DisruptionEvent]) -> bool:
+    """Evaluates whether strike events report real active/upcoming strikes vs informational notices saying no strikes."""
+    negative_phrases = [
+        "niet gestaakt",
+        "geen staking",
+        "geen stakingsacties",
+        "no strike",
+        "no active strike",
+        "called off",
+        "opgeschort",
+        "afgelast",
+        "won't be strike",
+        "will not be strike",
+    ]
+    for s in strikes:
+        full_text = f"{s.title} {s.impact} {s.advice}".lower()
+        if not any(neg in full_text for neg in negative_phrases):
+            return True
+    return False
 
 SYSTEM_PROMPT = """Je bent de Nederlandse Openbaar Vervoer Monitor assistent. Jouw taak is om een beknopt, overzichtelijk Telegram-bericht te genereren in zuivere HTML-opmaak (gebruik UITSLUITEND <b>, <i> en <code> tags, GEEN Markdown zoals **, *, # of backticks).
 
@@ -167,14 +222,31 @@ class DisruptionSummarizer:
 
         try:
             strikes_msg: Optional[str] = None
+            has_actual_strikes = False
             if strikes:
-                strikes_msg = self._generate_strikes_message(strikes, period_str)
+                candidate = self._generate_strikes_message(strikes, period_str)
+                if candidate and not is_no_message(candidate):
+                    strikes_msg = candidate
+                    has_actual_strikes = True
+                else:
+                    logger.info("Gemma evaluated strike data and decided NO strikes message is needed.")
 
             works_msg: Optional[str] = None
+            has_actual_works = False
             if works:
-                works_msg = self._generate_works_message(works, period_str)
+                candidate = self._generate_works_message(works, period_str)
+                if candidate and not is_no_message(candidate):
+                    works_msg = candidate
+                    has_actual_works = True
+                else:
+                    logger.info("Gemma evaluated works data and decided NO works message is needed.")
 
-            status_msg = self._generate_status_message(events, period_str, has_strikes=bool(strikes), has_works=bool(works))
+            status_msg = self._generate_status_message(
+                events,
+                period_str,
+                has_strikes=has_actual_strikes,
+                has_works=has_actual_works,
+            )
 
             return DigestReport(
                 strikes_message=strikes_msg,
@@ -185,16 +257,25 @@ class DisruptionSummarizer:
             logger.error(f"Error generating multi-message report via Ollama: {e}")
             return self._fallback_report(events, period_str)
 
+    def generate_voice_script(self, events: List[DisruptionEvent]) -> str:
+        """Generates a spoken voice script via Gemma honoring strict 15s (calm) and 45s (disruptions) limits."""
+        from src.voice import generate_voice_script as _gen_voice
+        return _gen_voice(events, language=self.language, host=self.host, model=self.model)
+
     def _generate_strikes_message(self, strikes: List[DisruptionEvent], period_str: str) -> str:
         reg = self.regions_label
         strike_texts = "\n\n".join(s.format_for_prompt(include_bus_details=False) for s in strikes)
 
         if self.is_english:
             system_prompt = (
-                f"You are the {reg} Public Transport Monitor assistant. Generate Message 1: STRIKES.\n"
+                f"You are the {reg} Public Transport Monitor assistant. Evaluate strike information and generate Message 1: STRIKES.\n"
                 f"Write the entire message in English.\n"
                 f"Use ONLY valid Telegram HTML (<b>, <i>, <code>). NO Markdown.\n\n"
-                f"Follow EXACTLY this uniform structure:\n"
+                f"CRITICAL DECISION RULE:\n"
+                f"Carefully evaluate whether there are actual active, upcoming, or announced strike actions during the monitoring period.\n"
+                f"- If the information states that there are NO strikes (e.g. 'no strike actions until November 4', negotiations resumed without strike, or actions have been called off/suspended): you MUST output strictly the single word 'NO_MESSAGE' and nothing else!\n"
+                f"- If no actual strikes are scheduled within the next 7 days: output strictly 'NO_MESSAGE'.\n"
+                f"- ONLY if real strike actions are taking place or scheduled: generate the message following this uniform structure:\n\n"
                 f"<b>🔴 PT MONITOR {reg.upper()}: STRIKES</b>\n"
                 f"<i>Monitoring period: {period_str}</i>\n\n"
                 f"<b>Reason & Background:</b>\n"
@@ -208,18 +289,23 @@ class DisruptionSummarizer:
                 f"- DO show specific train series and line numbers (such as NS Intercity, Sprinter, regional rail lines).\n"
                 f"- Do NOT show bus line numbers (NEVER write 'Line 350', 'Line 4' etc.) and NEVER write specific bus stop names.\n"
                 f"- Do NOT add travel advice (no Travel Advice section).\n"
+                f"- Do NOT add Key Takeaways.\n"
                 f"- Keep the message concise, professional, and easily scannable."
             )
             user_prompt = (
                 f"Here is the strike information for {reg}:\n\n"
                 f"{strike_texts}\n\n"
-                f"Now generate the uniform Telegram HTML message for the strikes in English conforming to the formatting rules."
+                f"Evaluate if real strikes are happening. If so, generate the Telegram HTML message; otherwise output strictly 'NO_MESSAGE'."
             )
         else:
             system_prompt = (
-                f"Je bent de {reg} Openbaar Vervoer Monitor assistent. Genereer Bericht 1: STAKINGEN.\n"
+                f"Je bent de {reg} Openbaar Vervoer Monitor assistent. Beoordeel de stakingsinformatie en genereer Bericht 1: STAKINGEN.\n"
                 f"Gebruik UITSLUITEND geldige Telegram HTML (<b>, <i>, <code>). GEEN Markdown.\n\n"
-                f"Volg EXACT deze uniforme structuur:\n"
+                f"CRUCIALE BESLISSINGSREGEL:\n"
+                f"Beoordeel eerst zorgvuldig of er daadwerkelijk sprake is van actieve, geplande of aangekondigde stakingsacties binnen de peilperiode.\n"
+                f"- Indien de informatie meldt dat er GEEN stakingen zijn (bijvoorbeeld: 'tot en met 4 november wordt er niet gestaakt', onderhandelingen hervat zonder staking, of acties afgelast/opgeschort): geef dan UITSLUITEND het enkele woord 'NO_MESSAGE' en verder niets!\n"
+                f"- Indien er binnen de komende 7 dagen geen daadwerkelijke stakingen plaatsvinden: geef UITSLUITEND 'NO_MESSAGE'.\n"
+                f"- ALLEEN wanneer er daadwerkelijk stakingsacties plaatsvinden: genereer het volledige bericht conform deze uniforme structuur:\n\n"
                 f"<b>🔴 OV MONITOR {reg.upper()}: STAKINGEN</b>\n"
                 f"<i>Peilperiode: {period_str}</i>\n\n"
                 f"<b>Aanleiding & Achtergrond:</b>\n"
@@ -233,12 +319,13 @@ class DisruptionSummarizer:
                 f"- Toon WEL specifieke treinnummers en treinseries (zoals NS Intercity, Sprinter, regionale spoorlijnen).\n"
                 f"- Toon GEEN buslijnnummers (schrijf NOOIT 'Lijn 350', 'Lijn 4' etc.) en NOOIT specifieke bushaltenamen.\n"
                 f"- Voeg GEEN reisadvies toe (geen Reisadvies sectie).\n"
+                f"- Voeg GEEN belangrijkste aandachtspunten / Key Takeaways toe.\n"
                 f"- Houd het bericht beknopt, professioneel en direct scanbaar."
             )
             user_prompt = (
                 f"Hier zijn de geregistreerde stakingsgegevens voor {reg}:\n\n"
                 f"{strike_texts}\n\n"
-                f"Genereer nu het uniforme Telegram HTML-bericht voor de stakingen conform de opmaakregels."
+                f"Beoordeel of er daadwerkelijk gestaakt wordt. Zo ja, genereer het bericht. Zo nee, antwoord uitsluitend met 'NO_MESSAGE'."
             )
 
         return self._call_ollama(system_prompt, user_prompt)
@@ -254,10 +341,13 @@ class DisruptionSummarizer:
 
         if self.is_english:
             system_prompt = (
-                f"You are the {reg} Public Transport Monitor assistant. Generate Message 2: ENGINEERING WORKS & DISRUPTIONS.\n"
+                f"You are the {reg} Public Transport Monitor assistant. Evaluate works information and generate Message 2: ENGINEERING WORKS & DISRUPTIONS.\n"
                 f"Write the entire message in English.\n"
                 f"Use ONLY valid Telegram HTML (<b>, <i>, <code>). NO Markdown.\n\n"
-                f"Follow EXACTLY this uniform structure:\n"
+                f"CRITICAL DECISION RULE:\n"
+                f"Evaluate whether there are actual substantial active or upcoming works or rail disruptions.\n"
+                f"- If there are no substantial disruptions or works (e.g. only normal operations): output strictly 'NO_MESSAGE'.\n"
+                f"- Otherwise, follow EXACTLY this uniform structure:\n\n"
                 f"<b>🟡 PT MONITOR {reg.upper()}: ENGINEERING WORKS & DISRUPTIONS</b>\n"
                 f"<i>Monitoring period: {period_str}</i>\n\n"
                 f"<b>Reason & Works:</b>\n"
@@ -271,19 +361,23 @@ class DisruptionSummarizer:
                 f"- DO show specific train series and line numbers (such as NS Intercity, Sprinter, regional rail lines).\n"
                 f"- Do NOT show bus line numbers (NEVER write 'Line 350', 'Line 4' etc.) and NEVER write specific bus stop names.\n"
                 f"- Do NOT add travel advice (no Travel Advice section).\n"
+                f"- Do NOT add Key Takeaways.\n"
                 f"- Keep the message concise, professional, and easily scannable."
             )
             user_prompt = (
                 f"Here are the active works and disruptions for {reg}:\n\n"
                 f"TRAINS:\n{train_texts}\n\n"
                 f"BUS OVERVIEW:\n{bus_summary}\n\n"
-                f"Now generate the uniform Telegram HTML message for the works and disruptions in English conforming to the formatting rules."
+                f"Evaluate if a disruptions message is needed. If so, generate it; otherwise output strictly 'NO_MESSAGE'."
             )
         else:
             system_prompt = (
-                f"Je bent de {reg} Openbaar Vervoer Monitor assistent. Genereer Bericht 2: WERKZAAMHEDEN & STORINGEN.\n"
+                f"Je bent de {reg} Openbaar Vervoer Monitor assistent. Beoordeel werkzaamheden en genereer Bericht 2: WERKZAAMHEDEN & STORINGEN.\n"
                 f"Gebruik UITSLUITEND geldige Telegram HTML (<b>, <i>, <code>). GEEN Markdown.\n\n"
-                f"Volg EXACT deze uniforme structuur:\n"
+                f"CRUCIALE BESLISSINGSREGEL:\n"
+                f"Beoordeel of er sprake is van substantiële actieve of geplande werkzaamheden of treinstoringen.\n"
+                f"- Indien er geen noemenswaardige verstoringen of werkzaamheden zijn: geef dan UITSLUITEND 'NO_MESSAGE'.\n"
+                f"- Zo wel, volg EXACT deze uniforme structuur:\n\n"
                 f"<b>🟡 OV MONITOR {reg.upper()}: WERKZAAMHEDEN & STORINGEN</b>\n"
                 f"<i>Peilperiode: {period_str}</i>\n\n"
                 f"<b>Aanleiding & Werkzaamheden:</b>\n"
@@ -297,13 +391,14 @@ class DisruptionSummarizer:
                 f"- Toon WEL specifieke treinnummers en treinseries (zoals NS Intercity, Sprinter, regionale spoorlijnen).\n"
                 f"- Toon GEEN buslijnnummers (schrijf NOOIT 'Lijn 350', 'Lijn 4' etc.) en NOOIT specifieke bushaltenamen.\n"
                 f"- Voeg GEEN reisadvies toe (geen Reisadvies sectie).\n"
+                f"- Voeg GEEN belangrijkste aandachtspunten / Key Takeaways toe.\n"
                 f"- Houd het bericht beknopt, professioneel en direct scanbaar."
             )
             user_prompt = (
                 f"Hier zijn de actuele werkzaamheden en storingen voor {reg}:\n\n"
                 f"TREINEN:\n{train_texts}\n\n"
                 f"BUSSEN OVERZICHT:\n{bus_summary}\n\n"
-                f"Genereer nu het uniforme Telegram HTML-bericht voor de werkzaamheden en storingen conform de opmaakregels."
+                f"Beoordeel of een werkzaamhedenbericht nodig is. Zo ja, genereer het; zo nee, antwoord uitsluitend met 'NO_MESSAGE'."
             )
 
         return self._call_ollama(system_prompt, user_prompt)
@@ -317,92 +412,116 @@ class DisruptionSummarizer:
     ) -> str:
         reg = self.regions_label
 
-        if self.is_english:
-            if has_strikes:
-                status_icon = "🔴"
-                status_level = "DISRUPTED / STRIKE ACTION"
-            elif has_works:
-                status_icon = "🟡"
-                status_level = "MODERATE DELAYS / ENGINEERING WORKS"
-            else:
-                status_icon = "🟢"
-                status_level = "REGULAR SCHEDULE"
+        if has_strikes:
+            status_level = "DISRUPTED / STRIKE ACTION" if self.is_english else "VERSTOORD / STAKINGSACTIE"
+        elif has_works:
+            status_level = "MODERATE DELAYS / ENGINEERING WORKS" if self.is_english else "BEPERKTE HINDER / WERKZAAMHEDEN"
+        else:
+            status_level = "REGULAR SCHEDULE" if self.is_english else "REGULIERE DIENSTREGELING"
 
+        if self.is_english:
             system_prompt = (
                 f"You are the {reg} Public Transport Monitor assistant. Generate Message 3: GENERAL LINE STATUS.\n"
                 f"Write the entire message in English.\n"
                 f"Use ONLY valid Telegram HTML (<b>, <i>, <code>). NO Markdown.\n\n"
+                f"CRITICAL STATUS EVALUATION:\n"
+                f"Choose the overall status banner based on the real situation:\n"
+                f"- 🟢 PT MONITOR {reg.upper()}: GENERAL STATUS (GREEN):\n"
+                f"  Set status to GREEN (🟢) if transport is running on regular schedule, OR if the only strike notice states that there will NOT be strike actions (e.g. no strikes until November 4) and no major disruptions exist!\n"
+                f"- 🟡 PT MONITOR {reg.upper()}: GENERAL STATUS (YELLOW):\n"
+                f"  Set status to YELLOW (🟡) if there is moderate delay, track maintenance, or local works without strike action.\n"
+                f"- 🔴 PT MONITOR {reg.upper()}: GENERAL STATUS (RED):\n"
+                f"  Set status to RED (🔴) ONLY if there are active, confirmed strike actions or severe network-wide calamities.\n\n"
                 f"Follow EXACTLY this uniform structure:\n"
-                f"<b>{status_icon} PT MONITOR {reg.upper()}: GENERAL STATUS</b>\n"
+                f"<b>[🟢 or 🟡 or 🔴] PT MONITOR {reg.upper()}: GENERAL STATUS</b>\n"
                 f"<i>Monitoring period: {period_str}</i>\n\n"
                 f"<b>Network Status:</b>\n"
                 f"[Executive summary of overall public transport condition in {reg}: {status_level}]\n\n"
                 f"<b>Overview by Modality:</b>\n"
                 f"• <b>Train Connections:</b> [Status of main corridors with train series like NS Intercity, Sprinter, regional lines]\n"
                 f"• <b>Bus Network:</b> [General service status and punctuality of regional and city bus fleets]\n\n"
-                f"<b>Key Takeaways:</b>\n"
-                f"[1 or 2 key points commuters must take into account this week]\n\n"
-                f"IMPORTANT DETAIL RULES:\n"
+                f"CRITICAL RULES:\n"
+                f"- Do NOT add a 'Key Takeaways' section! Stop immediately after Overview by Modality.\n"
+                f"- Do NOT add travel advice (no Travel Advice section).\n"
                 f"- DO show specific train series and line numbers (such as NS Intercity, Sprinter, regional rail lines).\n"
                 f"- Do NOT show bus line numbers and do NOT show specific bus stop names.\n"
-                f"- Do NOT add travel advice (no Travel Advice section).\n"
                 f"- Keep the message concise, professional, and easily scannable."
             )
             user_prompt = (
                 f"Summary data for {reg}:\n"
-                f"- Strike actions active/planned: {'Yes' if has_strikes else 'No'}\n"
+                f"- Strike actions active/planned: {'Yes' if has_strikes else 'No (or informational notices state no strikes until later date)'}\n"
                 f"- Works/disruptions active: {'Yes' if has_works else 'No'}\n"
                 f"- Total recorded events: {len(events)}\n\n"
                 f"Now generate the uniform Telegram HTML message for the general network status in English conforming to the formatting rules."
             )
         else:
-            if has_strikes:
-                status_icon = "🔴"
-                status_level = "VERSTOORD / STAKINGSACTIE"
-            elif has_works:
-                status_icon = "🟡"
-                status_level = "BEPERKTE HINDER / WERKZAAMHEDEN"
-            else:
-                status_icon = "🟢"
-                status_level = "REGULIERE DIENSTREGELING"
-
             system_prompt = (
                 f"Je bent de {reg} Openbaar Vervoer Monitor assistent. Genereer Bericht 3: ALGEMENE STATUS VAN DE LIJNEN.\n"
                 f"Gebruik UITSLUITEND geldige Telegram HTML (<b>, <i>, <code>). GEEN Markdown.\n\n"
+                f"CRUCIALE STATUS BEOORDELING:\n"
+                f"Kies de algemene statusbanner op basis van de werkelijke situatie:\n"
+                f"- 🟢 OV MONITOR {reg.upper()}: ALGEMENE STATUS (GROEN):\n"
+                f"  Zet de status op GROEN (🟢) als alles volgens dienstregeling rijdt, OF als de stakingsinformatie aangeeft dat er NIET gestaakt wordt (bijvoorbeeld: tot en met 4 november wordt er niet gestaakt) en er geen grote storingen zijn!\n"
+                f"- 🟡 OV MONITOR {reg.upper()}: ALGEMENE STATUS (GEEL):\n"
+                f"  Zet de status op GEEL (🟡) bij beperkte hinder, spoorwerkzaamheden of lokale vertragingen zonder staking.\n"
+                f"- 🔴 OV MONITOR {reg.upper()}: ALGEMENE STATUS (ROOD):\n"
+                f"  Zet de status op ROOD (🔴) UITSLUITEND als er daadwerkelijk actieve of aangekondigde stakingen of grote calamiteiten zijn.\n\n"
                 f"Volg EXACT deze uniforme structuur:\n"
-                f"<b>{status_icon} OV MONITOR {reg.upper()}: ALGEMENE STATUS</b>\n"
+                f"<b>[🟢 of 🟡 of 🔴] OV MONITOR {reg.upper()}: ALGEMENE STATUS</b>\n"
                 f"<i>Peilperiode: {period_str}</i>\n\n"
                 f"<b>Netwerkstatus:</b>\n"
                 f"[Executive samenvatting van de algehele situatie in het openbaar vervoer in {reg}: {status_level}]\n\n"
                 f"<b>Overzicht per modaliteit:</b>\n"
                 f"• <b>Treinverbindingen:</b> [Status van de hoofdcorridors met treinseries zoals NS Intercity, Sprinter en regionale spoorlijnen]\n"
                 f"• <b>Busnetwerk:</b> [Algemene inzetbaarheid en punctualiteit van het regionale en stadsbusnetwerk]\n\n"
-                f"<b>Belangrijkste aandachtspunten:</b>\n"
-                f"[1 of 2 belangrijkste punten waar forenzen deze week rekening mee moeten houden]\n\n"
-                f"BELANGRIJKE DETAIL-REGELS:\n"
+                f"CRUCIALE OPMAAKREGELS:\n"
+                f"- Voeg GEEN 'Belangrijkste aandachtspunten' of 'Key Takeaways' toe! Stop direct na Overzicht per modaliteit.\n"
+                f"- Voeg GEEN reisadvies toe (geen Reisadvies sectie).\n"
                 f"- Toon WEL specifieke treinnummers en treinseries (zoals NS Intercity, Sprinter, regionale spoorlijnen).\n"
                 f"- Toon GEEN buslijnnummers en GEEN specifieke bushaltenamen.\n"
-                f"- Voeg GEEN reisadvies toe (geen Reisadvies sectie).\n"
                 f"- Houd het bericht beknopt, professioneel en direct scanbaar."
             )
             user_prompt = (
                 f"Samenvatting gegevens voor {reg}:\n"
-                f"- Stakingsacties actief/gepland: {'Ja' if has_strikes else 'Nee'}\n"
+                f"- Stakingsacties actief/gepland: {'Ja' if has_strikes else 'Nee (of berichten melden dat er niet gestaakt wordt tot latere datum)'}\n"
                 f"- Werkzaamheden/verstoringen actief: {'Ja' if has_works else 'Nee'}\n"
                 f"- Totaal geregistreerde gebeurtenissen: {len(events)}\n\n"
                 f"Genereer nu het uniforme Telegram HTML-bericht voor de algemene netwerkstatus conform de opmaakregels."
             )
 
-        return self._call_ollama(system_prompt, user_prompt)
+        raw_msg = self._call_ollama(system_prompt, user_prompt)
+
+        # Enforce green status if neither strikes nor works are active
+        if not has_strikes and not has_works:
+            raw_msg = re.sub(r"<b>\s*[🔴🟡]\s*", "<b>🟢 ", raw_msg)
+            raw_msg = re.sub(
+                r"(?:VERSTOORD\s*/\s*STAKINGSACTIE|DISRUPTED\s*/\s*STRIKE\s*ACTION|BEPERKTE\s*HINDER\s*/\s*WERKZAAMHEDEN|MODERATE\s*DELAYS\s*/\s*ENGINEERING\s*WORKS)",
+                "REGULIERE DIENSTREGELING" if not self.is_english else "REGULAR SCHEDULE",
+                raw_msg,
+                flags=re.IGNORECASE,
+            )
+
+        # Strictly strip any Key Takeaways / Belangrijkste aandachtspunten block
+        raw_msg = re.sub(
+            r"<b>\s*(?:Key\s*Takeaways?|Belangrijkste\s*aandachtspunten)\s*:?\s*</b>.*",
+            "",
+            raw_msg,
+            flags=re.IGNORECASE | re.DOTALL,
+        )
+
+        return raw_msg.strip()
 
     def _fallback_report(self, events: List[DisruptionEvent], period_str: str) -> DigestReport:
         reg = self.regions_label
         strikes = [e for e in events if e.is_strike]
         works = [e for e in events if not e.is_strike]
 
+        has_substantive = has_substantive_strikes(strikes)
+        has_substantive_works = bool(works)
+
         if self.is_english:
             strikes_msg: Optional[str] = None
-            if strikes:
+            if strikes and has_substantive:
                 s_lines = [
                     f"<b>🔴 PT MONITOR {reg.upper()}: STRIKES</b>",
                     f"<i>Monitoring period: {period_str}</i>\n",
@@ -417,7 +536,7 @@ class DisruptionSummarizer:
                 strikes_msg = "\n".join(s_lines)
 
             works_msg: Optional[str] = None
-            if works:
+            if works and has_substantive_works:
                 w_lines = [
                     f"<b>🟡 PT MONITOR {reg.upper()}: ENGINEERING WORKS & DISRUPTIONS</b>",
                     f"<i>Monitoring period: {period_str}</i>\n",
@@ -434,8 +553,12 @@ class DisruptionSummarizer:
                 w_lines.append("• <b>Bus:</b> Various local detours and modified routes across the region.")
                 works_msg = "\n".join(w_lines)
 
-            status_icon = "🔴" if strikes else ("🟡" if works else "🟢")
-            status_text = "Disrupted due to strike actions" if strikes else ("Minor disruptions due to engineering works" if works else "All lines running on regular schedule")
+            status_icon = "🔴" if has_substantive else ("🟡" if has_substantive_works else "🟢")
+            status_text = (
+                "Disrupted due to strike actions" if has_substantive else (
+                    "Minor disruptions due to engineering works" if has_substantive_works else "All lines running on regular schedule"
+                )
+            )
             status_lines = [
                 f"<b>{status_icon} PT MONITOR {reg.upper()}: GENERAL STATUS</b>",
                 f"<i>Monitoring period: {period_str}</i>\n",
@@ -443,14 +566,12 @@ class DisruptionSummarizer:
                 f"{status_text} ({reg}).\n",
                 "<b>Overview by Modality:</b>",
                 "• <b>Train Connections:</b> Rail corridors operational; expect delays on lines with engineering works.",
-                "• <b>Bus Network:</b> Regional and city buses running with local detours.\n",
-                "<b>Key Takeaways:</b>",
-                "Check live departure times and plan ahead on strike and maintenance days.",
+                "• <b>Bus Network:</b> Regional and city buses running with local detours.",
             ]
             status_msg = "\n".join(status_lines)
         else:
             strikes_msg = None
-            if strikes:
+            if strikes and has_substantive:
                 s_lines = [
                     f"<b>🔴 OV MONITOR {reg.upper()}: STAKINGEN</b>",
                     f"<i>Peilperiode: {period_str}</i>\n",
@@ -465,7 +586,7 @@ class DisruptionSummarizer:
                 strikes_msg = "\n".join(s_lines)
 
             works_msg = None
-            if works:
+            if works and has_substantive_works:
                 w_lines = [
                     f"<b>🟡 OV MONITOR {reg.upper()}: WERKZAAMHEDEN & STORINGEN</b>",
                     f"<i>Peilperiode: {period_str}</i>\n",
@@ -482,8 +603,12 @@ class DisruptionSummarizer:
                 w_lines.append("• <b>Bus:</b> Diverse lokale omleidingen en aangepaste routes in de regio.")
                 works_msg = "\n".join(w_lines)
 
-            status_icon = "🔴" if strikes else ("🟡" if works else "🟢")
-            status_text = "Verstoord wegens stakingsacties" if strikes else ("Beperkte hinder door werkzaamheden" if works else "Alle lijnen rijden volgens dienstregeling")
+            status_icon = "🔴" if has_substantive else ("🟡" if has_substantive_works else "🟢")
+            status_text = (
+                "Verstoord wegens stakingsacties" if has_substantive else (
+                    "Beperkte hinder door werkzaamheden" if has_substantive_works else "Alle lijnen rijden volgens dienstregeling"
+                )
+            )
             status_lines = [
                 f"<b>{status_icon} OV MONITOR {reg.upper()}: ALGEMENE STATUS</b>",
                 f"<i>Peilperiode: {period_str}</i>\n",
@@ -491,9 +616,7 @@ class DisruptionSummarizer:
                 f"{status_text} ({reg}).\n",
                 "<b>Overzicht per modaliteit:</b>",
                 "• <b>Treinverbindingen:</b> Spoorcorridors operationeel, houd rekening met eventuele werkzaamheden.",
-                "• <b>Busnetwerk:</b> Regionale en stadsbussen rijden met lokale omleidingen.\n",
-                "<b>Belangrijkste aandachtspunten:</b>",
-                "Let op de aangekondigde actiedagen en controleer actuele vertrektijden.",
+                "• <b>Busnetwerk:</b> Regionale en stadsbussen rijden met lokale omleidingen.",
             ]
             status_msg = "\n".join(status_lines)
 
