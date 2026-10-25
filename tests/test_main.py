@@ -46,7 +46,11 @@ def test_start_daemon_schedules_jobs_and_runs_initial(monkeypatch):
     monkeypatch.setattr("main.BlockingScheduler", lambda: scheduler)
     monkeypatch.setattr("main.CronTrigger", lambda **kwargs: ("trigger", kwargs))
     monkeypatch.setattr("main.settings.timezone", "Europe/Amsterdam")
-    monkeypatch.setattr("main.settings.parsed_schedule_times", [(7, 30), (19, 30)])
+    monkeypatch.setattr(
+        main.settings.__class__,
+        "parsed_schedule_times",
+        property(lambda _self: [(7, 30), (19, 30)]),
+    )
     run_calls = []
     monkeypatch.setattr("main.run_job", lambda **kwargs: run_calls.append(kwargs))
 
