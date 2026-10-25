@@ -1,2 +1,78 @@
-# Ontspoord
-Or should I call it "Gederaileerd" just to piss off the Dutch speakers?
+# Netherlands Public Transport Monitor (`Ontspoord`)
+
+A Python CLI and scheduled automation tool that monitors public transport strikes, service disruptions, and planned engineering works across the Netherlands over the next 7 days, summarizes them locally using Gemma 4 E4B (`gemma4:e4b`) via Ollama, and delivers structured multi-message digests to Telegram DM.
+
+## Features
+- **Multi-Source Data Acquisition**:
+  - **Arriva Staking Scraper**: Scrapes `https://www.arriva.nl/plan-je-reis/staking/` for train and bus strike notices across regional and nationwide concessions.
+  - **Arriva Storingen & Werkzaamheden**: Scrapes `https://www.arriva.nl/plan-je-reis/storingen-en-werkzaamheden/` for active and upcoming route detours, track maintenance, and disruptions.
+  - **9292 Staking-OV**: Scrapes `https://9292.nl/actueel/staking-ov/` for national and regional strike dates, union announcements (FNV/CNV), and regional impact.
+  - **NS Reisinformatie API v3**: Direct integration with NS API v3 querying `CALAMITY`, `DISRUPTION`, and `MAINTENANCE` without `isActive=true` to capture upcoming announced strikes and weekend track work.
+  - **NS Web Fallback**: Scrapes `https://www.ns.nl/reisinformatie/actuele-situatie-op-het-spoor/` for major network-wide calamity alerts.
+- **7-Day Rolling Window**: Filters all events in the `Europe/Amsterdam` timezone to `[now, now + 7 days]`.
+- **Nationwide & Configurable Regions**:
+  - Monitors the entire Netherlands by default (`TARGET_REGIONS=Nederland`).
+  - Optional `.env` toggles to target any specific province(s) (e.g. `TARGET_REGIONS=Utrecht,Noord-Holland` or `Limburg`), station codes, or keywords.
+- **3-Message Structure**:
+  1. **Strikes** (conditional: sent only if strikes exist; covers reason, affected train series/bus areas).
+  2. **Works & Disruptions** (conditional: sent only if works exist; covers reason, affected train series/bus areas).
+  3. **General Status** (always sent; concise high-level overview).
+- **Local Gemma 4 E4B Summarization**
+- **Telegram DM Delivery**
+- **Flexible Execution Modes**:
+  - `--once`: Single immediate check.
+  - `--daemon`: Continuous monitoring with APScheduler at `07:30` and `19:30` (`Europe/Amsterdam`).
+  - `--dry-run`: Fetches live data and runs Gemma 4 E4B summarization, printing to stdout without calling Telegram.
+
+## Setup & Installation
+
+### 1. Prerequisites
+- Python 3.11+
+- Playwright Chromium installed (`playwright install chromium` or system chromium)
+- Ollama running locally with `gemma4:e4b` (`ollama run gemma4:e4b`)
+
+### 2. Environment Setup
+```bash
+uv venv .venv --system-site-packages
+.venv/bin/python -m pip install -e .
+```
+
+### 3. Configuration
+Copy `.env.example` to `.env` and fill in your secrets:
+```bash
+cp .env.example .env
+```
+
+Configuration variables:
+- `NS_API_KEY`: API Key from NS API Developer Portal.
+- `TELEGRAM_BOT_TOKEN`: Telegram bot token from @BotFather.
+- `TELEGRAM_CHAT_ID`: Your Telegram numeric chat ID.
+- `OLLAMA_HOST`: URL of local Ollama server (default: `http://localhost:11434`).
+- `OLLAMA_MODEL`: Target model (default: `gemma4:e4b`).
+- `SCHEDULE_TIMES`: Comma-separated HH:MM execution times (default: `07:30,19:30`).
+- `TIMEZONE`: Timezone for schedule and 7-day window (default: `Europe/Amsterdam`).
+- `LANGUAGE`: Language for generated messages: `nl` (Dutch, default) or `en` (English).
+- `TARGET_REGIONS`: Monitored regions toggle (default: `Nederland` for nationwide; or comma-separated regions e.g. `Utrecht,Noord-Holland` or `Limburg`).
+- `TARGET_STATION_CODES`: Monitored NS station codes (comma-separated, e.g. `UT,ASD`; leave empty for all stations nationwide).
+- `TARGET_KEYWORDS`: Monitored route, city, and corridor keywords (comma-separated; leave empty for all).
+
+## Usage
+
+### Single Immediate Run (`--once`)
+```bash
+.venv/bin/python main.py --once
+.venv/bin/python main.py --once --lang en
+```
+
+### Dry Run (`--dry-run`)
+Fetches live data and outputs the generated summary directly to stdout without sending to Telegram:
+```bash
+.venv/bin/python main.py --dry-run
+.venv/bin/python main.py --dry-run --lang en
+```
+
+### Scheduled Daemon (`--daemon`)
+Runs in the background and executes checks at `07:30` and `19:30` Amsterdam time:
+```bash
+.venv/bin/python main.py --daemon
+```
