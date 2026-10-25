@@ -1,3 +1,5 @@
+"""Date/time parsing and window utilities for Dutch transport notices."""
+
 import re
 from datetime import datetime, timedelta
 from typing import Optional, Tuple
@@ -22,10 +24,12 @@ DUTCH_MONTHS = {
 
 
 def get_current_amsterdam_time() -> datetime:
+    """Return the current timezone-aware timestamp in Europe/Amsterdam."""
     return datetime.now(AMSTERDAM_TZ)
 
 
 def get_7day_rolling_window() -> Tuple[datetime, datetime]:
+    """Return the [now, now + 7 days] time window used by collectors."""
     now = get_current_amsterdam_time()
     return now, now + timedelta(days=7)
 
@@ -36,6 +40,7 @@ def is_in_7day_window(
     window_start: Optional[datetime] = None,
     window_end: Optional[datetime] = None,
 ) -> bool:
+    """Check whether a time range overlaps with the default 7-day monitoring window."""
     if window_start is None or window_end is None:
         window_start, window_end = get_7day_rolling_window()
 
@@ -54,6 +59,7 @@ def is_in_7day_window(
 
 
 def parse_dutch_datetime(text: str, default_year: Optional[int] = None) -> Optional[datetime]:
+    """Parse ISO or Dutch textual datetime fragments into Amsterdam-local datetimes."""
     text = text.strip()
     if not text:
         return None
@@ -70,15 +76,15 @@ def parse_dutch_datetime(text: str, default_year: Optional[int] = None) -> Optio
     year = default_year or now.year
 
     pattern_full = r"(\d{1,2})\s+([a-zA-Z]+)(?:\s+(\d{4}))?(?:\s+(?:om\s+)?(\d{1,2})[:.](\d{2})(?:\s*uur)?)?"
-    match = re.search(pattern_full, text, re.IGNORECASE)
-    if match:
-        day_str, month_str, year_str, hour_str, min_str = match.groups()
+    datetime_match = re.search(pattern_full, text, re.IGNORECASE)
+    if datetime_match:
+        day_str, month_str, year_str, hour_str, minute_str = datetime_match.groups()
         month = DUTCH_MONTHS.get(month_str.lower())
         if month:
             day = int(day_str)
             target_year = int(year_str) if year_str else year
             hour = int(hour_str) if hour_str else 0
-            minute = int(min_str) if min_str else 0
+            minute = int(minute_str) if minute_str else 0
             try:
                 return datetime(target_year, month, day, hour, minute, tzinfo=AMSTERDAM_TZ)
             except ValueError:

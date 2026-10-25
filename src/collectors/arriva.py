@@ -15,6 +15,7 @@ STORINGEN_URL = "https://www.arriva.nl/plan-je-reis/storingen-en-werkzaamheden/"
 
 
 class ArrivaCollector:
+    """Collect strike and disruption events from Arriva web pages."""
 
     def __init__(
         self,
@@ -54,6 +55,7 @@ class ArrivaCollector:
         staking_html: Optional[str] = None,
         storingen_html: Optional[str] = None
     ) -> List[DisruptionEvent]:
+        """Fetch and parse both Arriva strike and disruption pages."""
         events: List[DisruptionEvent] = []
 
         if staking_html is None:
@@ -69,12 +71,14 @@ class ArrivaCollector:
         return events
 
     def parse_staking_html(self, html: str) -> List[DisruptionEvent]:
+        """Parse the Arriva strike page into normalized disruption events."""
         soup = BeautifulSoup(html, "html.parser")
         events: List[DisruptionEvent] = []
 
         main = soup.find("main") or soup
         section0 = main.find("section")
 
+        # Keep the source timestamp extraction for future metadata enrichment.
         timestamp_str = ""
         time_heading = soup.find(lambda t: t.name in ["h3", "h4", "p"] and "bijgewerkt op" in t.get_text().lower())
         if time_heading:
@@ -154,6 +158,7 @@ class ArrivaCollector:
         return events
 
     def parse_storingen_html(self, html: str) -> List[DisruptionEvent]:
+        """Parse Arriva disruptions/works cards into normalized disruption events."""
         soup = BeautifulSoup(html, "html.parser")
         events: List[DisruptionEvent] = []
 
@@ -166,6 +171,7 @@ class ArrivaCollector:
         return events
 
     def _parse_single_collapsable(self, item: BeautifulSoup) -> Optional[DisruptionEvent]:
+        """Convert one collapsible Arriva card into a disruption event."""
         svg_use = item.select_one("button svg use")
         href = svg_use.get("href", "") if svg_use else ""
         mode = "train" if "train" in href else "bus"
@@ -186,10 +192,10 @@ class ArrivaCollector:
         date_container = item.select_one("button div.leading-normal.text-mxs")
         if date_container:
             date_text = date_container.get_text(separator=" ", strip=True)
-            m = re.search(r"van\s+(.+?)\s+t/m\s+(.+)", date_text, re.IGNORECASE)
-            if m:
-                start_time = parse_dutch_datetime(m.group(1))
-                end_time = parse_dutch_datetime(m.group(2))
+            date_range_match = re.search(r"van\s+(.+?)\s+t/m\s+(.+)", date_text, re.IGNORECASE)
+            if date_range_match:
+                start_time = parse_dutch_datetime(date_range_match.group(1))
+                end_time = parse_dutch_datetime(date_range_match.group(2))
             else:
                 start_time = parse_dutch_datetime(date_text)
 
@@ -205,13 +211,13 @@ class ArrivaCollector:
             for h4 in wrapper.find_all("h4"):
                 h4_name = h4.get_text(strip=True).lower()
                 next_p = h4.find_next_sibling("p")
-                val = next_p.get_text(separator=" ", strip=True) if next_p else ""
+                detail_text = next_p.get_text(separator=" ", strip=True) if next_p else ""
                 if "oorzaak" in h4_name:
-                    oorzaak = val
+                    oorzaak = detail_text
                 elif "gevolg" in h4_name:
-                    gevolg = val
+                    gevolg = detail_text
                 elif "advies" in h4_name:
-                    advies = val
+                    advies = detail_text
 
         impact = gevolg or oorzaak or "Dienstregeling aangepast"
         advice = advies or "Raadpleeg de reisplanner voor de actuele situatie."

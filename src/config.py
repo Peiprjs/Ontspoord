@@ -1,10 +1,12 @@
 import os
 from typing import List, Optional
+
 from pydantic import Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
 class Settings(BaseSettings):
+    """Application settings loaded from environment variables and .env."""
     model_config = SettingsConfigDict(
         env_file=".env",
         env_file_encoding="utf-8",
@@ -30,6 +32,7 @@ class Settings(BaseSettings):
 
     @property
     def normalized_language(self) -> str:
+        """Return the supported language code used by prompt generation."""
         lang = self.language.strip().lower()
         if lang in {"en", "english", "eng"}:
             return "en"
@@ -53,11 +56,13 @@ class Settings(BaseSettings):
 
     @property
     def is_nationwide(self) -> bool:
-        val = self.target_regions.strip().lower()
-        return val in {"", "nederland", "landelijk", "all", "*"}
+        """Check whether monitoring is configured for nationwide coverage."""
+        normalized_region_setting = self.target_regions.strip().lower()
+        return normalized_region_setting in {"", "nederland", "landelijk", "all", "*"}
 
     @property
     def parsed_target_regions(self) -> List[str]:
+        """Parse comma-separated regions into a normalized list."""
         if self.is_nationwide:
             return []
         regions = [r.strip() for r in self.target_regions.split(",") if r.strip()]
@@ -71,11 +76,13 @@ class Settings(BaseSettings):
 
     @property
     def parsed_target_station_codes(self) -> set[str]:
+        """Parse and uppercase comma-separated NS station abbreviations."""
         codes = {c.strip().upper() for c in self.target_station_codes.split(",") if c.strip()}
         return codes
 
     @property
     def parsed_target_keywords(self) -> List[str]:
+        """Parse keyword filters and include selected target regions as keywords."""
         keywords = [k.strip().lower() for k in self.target_keywords.split(",") if k.strip()]
         for r in self.parsed_target_regions:
             r_lower = r.lower()
@@ -85,6 +92,7 @@ class Settings(BaseSettings):
 
     @property
     def parsed_schedule_times(self) -> List[tuple[int, int]]:
+        """Parse schedule times from HH:MM entries, with sane defaults on invalid input."""
         results = []
         for item in self.schedule_times.split(","):
             item = item.strip()

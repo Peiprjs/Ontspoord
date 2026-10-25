@@ -62,6 +62,15 @@ Configuration variables:
 
 ## Usage
 
+### Codebase Overview
+- `main.py`: CLI entrypoint and scheduler wiring for one-off, dry-run, and daemon modes.
+- `src/collectors/`: Source-specific collectors that normalize external data into shared models.
+- `src/models.py`: Shared Pydantic models for disruption events and report payloads.
+- `src/summarizer.py`: LLM prompt construction plus digest generation logic.
+- `src/notifier.py`: Telegram delivery logic, including chunking, retries, and optional voice delivery.
+- `src/time_utils.py`: Common timezone/date parsing helpers used by collectors.
+- `tests/`: Unit tests for summarization and voice behavior.
+
 ### Single Immediate Run (`--once`)
 ```bash
 .venv/bin/python main.py --once
