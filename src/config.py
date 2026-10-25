@@ -1,0 +1,83 @@
+import os
+from typing import List, Optional
+from pydantic import Field
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_file=".env",
+        env_file_encoding="utf-8",
+        extra="ignore",
+    )
+
+    ns_api_key: Optional[str] = Field(default=None, alias="NS_API_KEY")
+    telegram_bot_token: Optional[str] = Field(default=None, alias="TELEGRAM_BOT_TOKEN")
+    telegram_chat_id: Optional[str] = Field(default=None, alias="TELEGRAM_CHAT_ID")
+    ollama_host: str = Field(default="http://localhost:11434", alias="OLLAMA_HOST")
+    ollama_model: str = Field(default="gemma4:e4b", alias="OLLAMA_MODEL")
+    schedule_times: str = Field(default="07:30,19:30", alias="SCHEDULE_TIMES")
+    timezone: str = Field(default="Europe/Amsterdam", alias="TIMEZONE")
+
+    language: str = Field(default="nl", alias="LANGUAGE")
+
+    @property
+    def normalized_language(self) -> str:
+        lang = self.language.strip().lower()
+        if lang in {"en", "english", "eng"}:
+            return "en"
+        return "nl"
+
+    target_regions: str = Field(default="Nederland", alias="TARGET_REGIONS")
+    target_station_codes: str = Field(default="", alias="TARGET_STATION_CODES")
+    target_keywords: str = Field(default="", alias="TARGET_KEYWORDS")
+
+    @property
+    def is_nationwide(self) -> bool:
+        val = self.target_regions.strip().lower()
+        return val in {"", "nederland", "landelijk", "all", "*"}
+
+    @property
+    def parsed_target_regions(self) -> List[str]:
+        if self.is_nationwide:
+            return []
+        regions = [r.strip() for r in self.target_regions.split(",") if r.strip()]
+        return regions
+
+    @property
+    def regions_label(self) -> str:
+        if not self.parsed_target_regions:
+            return "The Netherlands" if self.normalized_language == "en" else "Nederland"
+        return " & ".join(self.parsed_target_regions)
+
+    @property
+    def parsed_target_station_codes(self) -> set[str]:
+        codes = {c.strip().upper() for c in self.target_station_codes.split(",") if c.strip()}
+        return codes
+
+    @property
+    def parsed_target_keywords(self) -> List[str]:
+        keywords = [k.strip().lower() for k in self.target_keywords.split(",") if k.strip()]
+        for r in self.parsed_target_regions:
+            r_lower = r.lower()
+            if r_lower not in keywords:
+                keywords.append(r_lower)
+        return keywords
+
+    @property
+    def parsed_schedule_times(self) -> List[tuple[int, int]]:
+        results = []
+        for item in self.schedule_times.split(","):
+            item = item.strip()
+            if not item:
+                continue
+            parts = item.split(":")
+            if len(parts) == 2:
+                try:
+                    results.append((int(parts[0]), int(parts[1])))
+                except ValueError:
+                    pass
+        return results or [(7, 30), (19, 30)]
+
+
+settings = Settings()
