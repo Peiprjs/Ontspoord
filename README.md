@@ -47,6 +47,10 @@ Configuration variables:
 - `NS_API_KEY`: API Key from NS API Developer Portal.
 - `TELEGRAM_BOT_TOKEN`: Telegram bot token from @BotFather.
 - `TELEGRAM_CHAT_ID`: Your Telegram numeric chat ID.
+- `ELEVEN_API_KEY`: ElevenLabs API key for optional 30-second interactive voice messages.
+- `ELEVENLABS_VOICE_ID`: ElevenLabs voice ID (default: `EXAVITQu4vr4xnSDxMaL` / Bella).
+- `ELEVENLABS_MODEL_ID`: ElevenLabs model (default: `eleven_multilingual_v2`).
+- `VOICE_ENABLED`: Set to `true` to always send voice notes with scheduled reports (default: `false`).
 - `OLLAMA_HOST`: URL of local Ollama server (default: `http://localhost:11434`).
 - `OLLAMA_MODEL`: Target model (default: `gemma4:e4b`).
 - `SCHEDULE_TIMES`: Comma-separated HH:MM execution times (default: `07:30,19:30`).
@@ -62,6 +66,8 @@ Configuration variables:
 ```bash
 .venv/bin/python main.py --once
 .venv/bin/python main.py --once --lang en
+# Optional interactive 30s voice summary via ElevenLabs:
+.venv/bin/python main.py --once --voice
 ```
 
 ### Dry Run (`--dry-run`)
@@ -69,6 +75,8 @@ Fetches live data and outputs the generated summary directly to stdout without s
 ```bash
 .venv/bin/python main.py --dry-run
 .venv/bin/python main.py --dry-run --lang en
+# Preview generated 30s 11Labs voice script:
+.venv/bin/python main.py --dry-run --voice
 ```
 
 ### Scheduled Daemon (`--daemon`)

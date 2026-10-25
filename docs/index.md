@@ -14,7 +14,7 @@ Disruption data gathered from multiple authoritative transit sources is filtered
 ---
 
 ## Why This Project Was Created
-
+I've been getting annoyed lately at the amount of service disruptions that have been occurring in my region. Mainly because I always forget to check, and I get to the station with a surprise +30 minute travel-around time, or a rail replacement bus. This bot will help me get the information twice a day (before leaving home, and before leaving the office/university), to hopefully help me plan my trips better.
 
 
 ---
@@ -39,6 +39,10 @@ Disruption data gathered from multiple authoritative transit sources is filtered
   1. **Strikes** *(Conditional)*: Sent only when strikes are announced; details unions, dates, affected train series, bus concessions, and alternatives.
   2. **Works & Disruptions** *(Conditional)*: Sent only when significant maintenance or disruptions occur; outlines impact areas, affected routes, and duration.
   3. **General Status** *(Always sent)*: High-level overview of overall transit network health and commuter advice.
+- **Interactive 30-Second ElevenLabs Voice Summaries**:
+  - Optional interactive audio digest summarizing network status in **30 seconds or less**.
+  - Utilizes **11Labs Audio Tags** (e.g. `[announcer]`, `[urgent]`, `[serious]`, `[sigh]`, `[relieved]`, `[cheerfully]`) for dynamic emotion and expressive performance.
+  - Generates native Ogg Opus audio streamed directly to your Telegram chat as a playable voice message bubble.
 - **Flexible Execution Modes**:
   - Immediate one-off scan (`--once`).
   - Terminal dry-run mode (`--dry-run`) to preview LLM outputs without sending Telegram alerts.
@@ -108,6 +112,12 @@ NS_API_KEY=your_ns_api_key_here
 TELEGRAM_BOT_TOKEN=your_telegram_bot_token_here
 TELEGRAM_CHAT_ID=your_telegram_chat_id_here
 
+# ElevenLabs Voice API (Optional 30s voice summary)
+ELEVEN_API_KEY=your_elevenlabs_api_key_here
+ELEVENLABS_VOICE_ID=EXAVITQu4vr4xnSDxMaL
+ELEVENLABS_MODEL_ID=eleven_multilingual_v2
+VOICE_ENABLED=false
+
 # Local Ollama LLM Configuration
 OLLAMA_HOST=http://localhost:11434
 OLLAMA_MODEL=gemma4:e4b
@@ -132,9 +142,13 @@ Executes a single check, generates the AI disruption digest, and delivers messag
 ```bash
 python main.py --once
 ```
+*To also send an interactive 30-second voice note:*
+```bash
+python main.py --once --voice
+```
 *To generate messages in English:*
 ```bash
-python main.py --once --lang en
+python main.py --once --lang en --voice
 ```
 
 #### B. Dry-Run Mode (`--dry-run`)
@@ -142,9 +156,9 @@ Fetches all live transit data, runs the local Gemma 4 summarization, and prints 
 ```bash
 python main.py --dry-run
 ```
-*Dry-run in English:*
+*Dry-run preview of the 30-second 11Labs voice script:*
 ```bash
-python main.py --dry-run --lang en
+python main.py --dry-run --voice
 ```
 
 #### C. Continuous Background Daemon (`--daemon`)
