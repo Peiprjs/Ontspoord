@@ -53,7 +53,7 @@ Configuration variables:
 - `TIMEZONE`: Timezone for schedule and 7-day window (default: `Europe/Amsterdam`).
 - `LANGUAGE`: Language for generated messages: `nl` (Dutch, default) or `en` (English).
 - `TARGET_REGIONS`: Monitored regions toggle (default: `Nederland` for nationwide; or comma-separated regions e.g. `Utrecht,Noord-Holland` or `Limburg`).
-- `TARGET_STATION_CODES`: Monitored NS station codes (comma-separated, e.g. `UT,ASD`; leave empty for all stations nationwide).
+- `TARGET_STATION_CODES`: Monitored NS station codes (comma-separated, e.g. `UT,ASD`; leave empty for all stations nationwide). For a complete list of station codes, visit [this Wikipedia page](https://en.wikipedia.org/wiki/Railway_stations_in_the_Netherlands#List_of_stations,_with_their_official_abbreviations).
 - `TARGET_KEYWORDS`: Monitored route, city, and corridor keywords (comma-separated; leave empty for all).
 
 ## Usage
